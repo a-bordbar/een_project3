@@ -1,3 +1,15 @@
+# ADD near the top of utils.py
+def nrmse(true, pred):
+    true = np.asarray(true, float); pred = np.asarray(pred, float)
+    num = np.linalg.norm(true - pred, 'fro')
+    den = np.linalg.norm(true, 'fro') + 1e-12
+    return num / den
+
+def psnr(true, pred):
+    true = np.asarray(true, float); pred = np.asarray(pred, float)
+    mse = np.mean((true - pred) ** 2)
+    return 10.0 * np.log10(1.0 / (mse + 1e-12))  # assumes data in [0,1]
+
 def rmse(true, pred):
     """Compute Root Mean Squared Error, ignoring NaNs in both arrays."""
     mask = ~np.isnan(true) & ~np.isnan(pred)
@@ -9,7 +21,8 @@ def rmse(true, pred):
 import numpy as np
 from numpy.linalg import svd
 
-def softImpute(Y, reg, num_iterations=200, tolerance=1e-5):
+# CHANGED signature and end of softImpute
+def softImpute(Y, reg, num_iterations=200, tolerance=1e-5, clip_output=False):
     """
     SoftImpute (simple NumPy version).
     Y: observed matrix with missing entries encoded as np.nan
@@ -53,7 +66,10 @@ def softImpute(Y, reg, num_iterations=200, tolerance=1e-5):
 
     # Final imputation: observed entries from Y, missing replaced by X_old
     X_completed = np.nan_to_num(P_Y + np.where(mask, 0.0, X_old), nan=0.0)
-    X_completed = np.clip(X_completed, np.nanmin(Y), np.nanmax(Y))
+
+    if clip_output:
+        # only clip for display, not for metrics/experiments
+        X_completed = np.clip(X_completed, 0.0, 1.0)
     return X_completed
 
 
@@ -100,50 +116,30 @@ def cross_validate_lambda(Y, lambdas, holdout_fraction=0.1, num_iterations=100, 
     return best_lambda, results
 
 
-def add_noise_and_missing(img, missing_fraction=0.3, snr_db=20, random_state=None):
-    """
-    Add Gaussian noise and random missing values to a grayscale image.
-
-    Parameters
-    ----------
-    img : np.ndarray
-        2D grayscale image with values in [0,1] or 0-255 (will be normalized automatically)
-    missing_fraction : float
-        Fraction of pixels to remove (set as NaN)
-    snr_db : float
-        Desired signal-to-noise ratio in decibels
-    random_state : int or None
-        Random seed for reproducibility
-
-    Returns
-    -------
-    img_noisy : np.ndarray
-        Image with missing values (NaN) and Gaussian noise added
-    mask : np.ndarray
-        Boolean array where True = observed pixels, False = missing
-    """
+# REPLACED add_noise_and_missing 
+def add_noise_and_missing(img, missing_fraction=0.3, snr_db=20, random_state=None, clip_for_display=True):
     rng = np.random.default_rng(random_state)
 
-    # Ensure float type and normalize to 0-1
     img = img.astype(float)
     if img.max() > 1.0:
         img = img / 255.0
 
-    # Step 1: Random missing values
+    # Random missing
     mask = rng.random(img.shape) > missing_fraction
     img_missing = img.copy()
     img_missing[~mask] = np.nan
 
-    # Step 2: Add Gaussian noise to observed pixels
-    snr_linear = 10 ** (snr_db / 10)
-    signal_power = np.nanvar(img_missing)
-    noise_std = np.sqrt(signal_power / snr_linear)
-    noise = rng.normal(0, noise_std, size=img.shape)
+    # Gaussian noise based on Frobenius norm power per entry (||X||_F^2 / (mn))
+    signal_power = (np.linalg.norm(img, 'fro') ** 2) / img.size
+
+    noise_power = signal_power / (10 ** (snr_db / 10.0))
+    noise = rng.normal(0.0, np.sqrt(noise_power), size=img.shape)
 
     img_noisy = img_missing.copy()
-    img_noisy[mask] += noise[mask]
+    img_noisy[mask] = img_noisy[mask] + noise[mask]
 
-    # Clip values to [0,1]
-    img_noisy = np.clip(img_noisy, 0.0, 1.0)
+    # IMPORTANT: no clipping for numeric experiments; allow caller to clip only for display
+    if clip_for_display:
+        img_noisy = np.clip(img_noisy, 0.0, 1.0)
 
     return img_noisy, mask

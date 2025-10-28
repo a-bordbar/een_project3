@@ -41,9 +41,9 @@ def softImpute_fallback(Y, reg=1.0, num_iterations=200, tolerance=1e-5, verbose=
         # fill missing with previous estimate
         Y_filled = np.where(mask, Y, X_old)
         X_new = _svd_shrink(Y_filled, reg)
-        # convergence check
-        denom = np.linalg.norm(X_old) + 1e-12
-        rel = np.linalg.norm(X_new - X_old) / denom
+        # convergence check using Frobenius norm
+        denom = np.linalg.norm(X_old, ord='fro') + 1e-12
+        rel = np.linalg.norm(X_new - X_old, ord='fro') / denom
         if verbose:
             print(f"[SoftImpute] it={it} rel={rel:.3e}")
         if rel < tolerance:
@@ -91,7 +91,7 @@ cross_validate_lambda = (
         X = (X - X.min()) / (X.max() - X.min() + 1e-12)
     return X
 '''
-def low_rank_matrix(m, n, r, rng=None, normalize=True):
+'''def low_rank_matrix(m, n, r, rng=None, normalize=True):
     """Generate X = U V^T with controllable true rank r."""
     rng = np.random.default_rng(None if rng is None else rng)
     U = rng.standard_normal((m, r))
@@ -101,14 +101,27 @@ def low_rank_matrix(m, n, r, rng=None, normalize=True):
         # Normalize so that the largest singular value = 1
         norm = np.linalg.norm(X, 'fro')
         X = X / norm
+    return X'''
+# REPLACE low_rank_matrix in main.py
+def low_rank_matrix(m, n, r, rng=None, normalize=True):
+    rng = np.random.default_rng(None if rng is None else rng)
+    U = rng.standard_normal((m, r))
+    V = rng.standard_normal((n, r))
+    X = U @ V.T
+    if normalize:
+        # Normalize so that the largest singular value = 1 (more reasonable scale)
+        s_max = np.linalg.svd(X, compute_uv=False)[0]
+        X = X / (s_max + 1e-12)
     return X
 
 def add_gaussian_noise(X, snr_db, rng=None):
     """
     Add Gaussian noise to achieve target SNR in dB: 10*log10(P_signal/P_noise) = snr_db
+    Uses Frobenius norm for signal power calculation
     """
     rng = np.random.default_rng(None if rng is None else rng)
-    sig_pow = np.mean((X - X.mean()) ** 2)
+    # Use Frobenius norm for signal power calculation (per-element power)
+    sig_pow = (np.linalg.norm(X, 'fro') ** 2) / X.size
     noise_pow = sig_pow / (10 ** (snr_db / 10.0))
     noise = rng.normal(0.0, np.sqrt(noise_pow), size=X.shape)
     Y = X + noise
@@ -150,7 +163,7 @@ def experiment_snr(
         lam = pick_lambda(
             Y, lam_grid, holdout_fraction=0.1, num_iterations=200, tolerance=1e-5, random_state=42
         )
-        Xhat = softImpute(Y, reg=lam, num_iterations=200, tolerance=1e-5)
+        Xhat = softImpute(Y, reg=lam, num_iterations=200, tolerance=1e-5, clip_output=False)
 
         train_rmse = rmse_on_mask(X, Xhat, obs_mask)              # on observed entries
         test_rmse  = rmse_on_mask(X, Xhat, ~obs_mask)             # on missing entries
@@ -188,7 +201,7 @@ def experiment_missingness(
         lam = pick_lambda(
             Y, lam_grid, holdout_fraction=0.1, num_iterations=200, tolerance=1e-5, random_state=7
         )
-        Xhat = softImpute(Y, reg=lam, num_iterations=200, tolerance=1e-5)
+        Xhat = softImpute(Y, reg=lam, num_iterations=200, tolerance=1e-5, clip_output=False)
         train_rmse = rmse_on_mask(X, Xhat, obs_mask)
         test_rmse  = rmse_on_mask(X, Xhat, ~obs_mask)
         results.append((mf, train_rmse, test_rmse))
@@ -224,7 +237,7 @@ def experiment_true_rank(
         lam = pick_lambda(
             Y, lam_grid, holdout_fraction=0.1, num_iterations=200, tolerance=1e-5, random_state=11
         )
-        Xhat = softImpute(Y, reg=lam, num_iterations=200, tolerance=1e-5)
+        Xhat = softImpute(Y, reg=lam, num_iterations=200, tolerance=1e-5, clip_output=False)
         train_rmse = rmse_on_mask(X, Xhat, obs_mask)
         test_rmse  = rmse_on_mask(X, Xhat, ~obs_mask)
         results.append((r, train_rmse, test_rmse))
@@ -262,7 +275,7 @@ def hardImpute(Y, rank=10, num_iterations=200, tolerance=1e-5, verbose=False):
         U, s, VT = np.linalg.svd(Y_filled, full_matrices=False)
         k = min(rank, len(s))
         X_new = (U[:, :k] * s[:k]) @ VT[:k, :]
-        rel = np.linalg.norm(X_new - X_old) / (np.linalg.norm(X_old) + 1e-12)
+        rel = np.linalg.norm(X_new - X_old, ord='fro') / (np.linalg.norm(X_old, ord='fro') + 1e-12)
         if verbose:
             print(f"[HardImpute] it={it} rel={rel:.3e}")
         if rel < tolerance:
@@ -325,7 +338,7 @@ def experiment_grid_soft(m=96, n=96, r_list=(2,5,10,20), snr_list=(10,15,20,30),
         Xn = add_gaussian_noise(X, snr_db=snr_db, rng=rng)
         Y, obs_mask = apply_missingness(Xn, missing_fraction=miss, rng=rng)
         lam = pick_lambda(Y, lam_grid, holdout_fraction=0.1, num_iterations=200, tolerance=1e-5, random_state=7)
-        Xhat = softImpute(Y, reg=lam, num_iterations=200, tolerance=1e-5)
+        Xhat = softImpute(Y, reg=lam, num_iterations=200, tolerance=1e-5, clip_output=False)
         test_rmse = rmse_on_mask(X, Xhat, ~obs_mask)
         return test_rmse
 
@@ -414,7 +427,7 @@ def compare_soft_vs_hard(r=10, snr_db=20, missing_fraction=0.6, k_grid=None, lam
 
     # SoftImpute with CV λ
     lam = pick_lambda(Y_soft, lam_grid, holdout_fraction=0.1, num_iterations=200, tolerance=1e-5, random_state=13)
-    X_soft = softImpute(Y_soft, reg=lam, num_iterations=200, tolerance=1e-5)
+    X_soft = softImpute(Y_soft, reg=lam, num_iterations=200, tolerance=1e-5, clip_output=False)
     soft_test = rmse_on_mask(X, X_soft, ~obs_mask)
 
     # HardImpute with CV k
@@ -450,8 +463,8 @@ def visualize_soft_vs_hard_image(img_path="image.jpg", missing_fraction=0.5,
     img = img / 255.0
     print("Loaded image:", img.shape)
 
-    # --- Add Gaussian noise (based on SNR) ---
-    sig_pow = np.mean((img - img.mean()) ** 2)
+    # --- Add Gaussian noise (based on SNR) using Frobenius norm ---
+    sig_pow = (np.linalg.norm(img, 'fro') ** 2) / img.size
     noise_pow = sig_pow / (10 ** (snr_db / 10.0))
     noise = rng.normal(0.0, np.sqrt(noise_pow), size=img.shape)
     img_noisy = np.clip(img + noise, 0.0, 1.0)
@@ -464,7 +477,7 @@ def visualize_soft_vs_hard_image(img_path="image.jpg", missing_fraction=0.5,
     # --- SoftImpute reconstruction ---
     lam_best = pick_lambda(img_missing, lam_grid, holdout_fraction=0.1,
                            num_iterations=200, tolerance=1e-5, random_state=7)
-    img_soft = softImpute(img_missing, reg=lam_best, num_iterations=200, tolerance=1e-5)
+    img_soft = softImpute(img_missing, reg=lam_best, num_iterations=200, tolerance=1e-5, clip_output=False)
 
     # --- HardImpute reconstruction ---
     best_k, _ = cross_validate_rank(img_missing, k_grid, holdout_fraction=0.1,
@@ -524,11 +537,11 @@ def experiment_block_missingness(r=10, snr_db=20, frac_rows=0.2, frac_cols=0.2, 
 
     # CV λ and reconstruct
     lam_mar = pick_lambda(Y_mar, lam_grid, holdout_fraction=0.1, num_iterations=200, tolerance=1e-5, random_state=31)
-    X_mar = softImpute(Y_mar, reg=lam_mar, num_iterations=200, tolerance=1e-5)
+    X_mar = softImpute(Y_mar, reg=lam_mar, num_iterations=200, tolerance=1e-5, clip_output=False)
     mar_test = rmse_on_mask(X, X_mar, ~obs_mar)
 
     lam_blk = pick_lambda(Y_blk, lam_grid, holdout_fraction=0.1, num_iterations=200, tolerance=1e-5, random_state=32)
-    X_blk = softImpute(Y_blk, reg=lam_blk, num_iterations=200, tolerance=1e-5)
+    X_blk = softImpute(Y_blk, reg=lam_blk, num_iterations=200, tolerance=1e-5, clip_output=False)
     blk_test = rmse_on_mask(X, X_blk, ~obs_blk)
 
     # Plot
@@ -561,8 +574,8 @@ def visualize_soft_vs_hard_image(img_path="image.jpg", missing_fraction=0.5,
     img = img / 255.0
     print("Loaded image:", img.shape)
 
-    # --- Add Gaussian noise (controlled by SNR) ---
-    sig_pow = np.mean((img - img.mean()) ** 2)
+    # --- Add Gaussian noise (controlled by SNR) using Frobenius norm ---
+    sig_pow = (np.linalg.norm(img, 'fro') ** 2) / img.size
     noise_pow = sig_pow / (10 ** (snr_db / 10.0))
     noise = rng.normal(0.0, np.sqrt(noise_pow), size=img.shape)
     img_noisy = np.clip(img + noise, 0.0, 1.0)
@@ -578,7 +591,7 @@ def visualize_soft_vs_hard_image(img_path="image.jpg", missing_fraction=0.5,
                            num_iterations=200, tolerance=1e-5,
                            random_state=7)
     img_soft = softImpute(img_missing, reg=lam_best,
-                          num_iterations=200, tolerance=1e-5)
+                          num_iterations=200, tolerance=1e-5, clip_output=False)
 
     # --- HardImpute reconstruction ---
     best_k, _ = cross_validate_rank(img_missing, k_grid,
